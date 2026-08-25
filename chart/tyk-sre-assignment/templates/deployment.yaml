@@ -1,0 +1,75 @@
+{{/* Place at charts/tyk-sre-assignment/templates/deployment.yaml */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tyk-sre-assignment.fullname" . }}
+  labels:
+    {{- include "tyk-sre-assignment.labels" . | nindent 4 }}
+
+spec:
+  # Was missing: values.yaml declared replicaCount but nothing read it, so
+  # setting it had no effect.
+  replicas: {{ .Values.replicaCount }}
+
+  selector:
+    matchLabels:
+      {{- include "tyk-sre-assignment.selectorLabels" . | nindent 6 }}
+
+  template:
+    metadata:
+      labels:
+        {{- include "tyk-sre-assignment.selectorLabels" . | nindent 8 }}
+    spec:
+      # Without this the pod uses the namespace's default ServiceAccount, which
+      # holds no permissions — every Kubernetes call 403s and the endpoints
+      # return 502.
+      serviceAccountName: {{ include "tyk-sre-assignment.serviceAccountName" . }}
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532          # distroless "nonroot"
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: tyk-sre-assignment
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          args:
+            {{- toYaml .Values.args | nindent 12 }}
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          # The binary is static and writes nothing to disk, so it can drop
+          # everything an attacker would need after an RCE.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          # Readiness checks the API server, so it flips when Kubernetes is
+          # unreachable and traffic stops.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+
+          # Liveness deliberately does NOT check the API server. If it did, one
+          # control-plane blip would restart every replica at once — and a
+          # restart cannot fix the API server anyway.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

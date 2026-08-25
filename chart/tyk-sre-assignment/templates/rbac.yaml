@@ -1,0 +1,61 @@
+{{/* Place at charts/tyk-sre-assignment/templates/rbac.yaml */}}
+
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "tyk-sre-assignment.serviceAccountName" . }}
+  labels:
+    {{- include "tyk-sre-assignment.labels" . | nindent 4 }}
+{{- end }}
+
+{{- if .Values.rbac.create }}
+---
+# ClusterRole rather than Role: /cluster/health lists Deployments across every
+# namespace, which a namespaced Role cannot grant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "tyk-sre-assignment.fullname" . }}
+  labels:
+    {{- include "tyk-sre-assignment.labels" . | nindent 4 }}
+rules:
+  # /cluster/health
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list"]
+
+  # /readyz reaches the API server by listing a single namespace
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+
+{{- if .Values.rbac.isolation }}
+  # POST/DELETE /isolations. The only mutating permission this service holds.
+  #
+  # Set rbac.isolation=false for a read-only instance: it then cannot cut
+  # traffic because it lacks the verbs, not merely because it does not expose
+  # the route.
+  #
+  # No "update" — isolations are created and deleted, never edited, so the
+  # policy body stays something only this service can have written.
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumclusterwidenetworkpolicies"]
+    verbs: ["get", "create", "delete"]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "tyk-sre-assignment.fullname" . }}
+  labels:
+    {{- include "tyk-sre-assignment.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "tyk-sre-assignment.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "tyk-sre-assignment.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

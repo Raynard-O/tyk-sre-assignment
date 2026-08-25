@@ -1,0 +1,30 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/raynard-o/tyk-sre-assignment
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+  # Grants create/delete on Cilium policies, which is what POST /isolations
+  # needs. Set false for a read-only instance that cannot cut traffic.
+  isolation: true
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+args:
+  - "--address=:8080"
