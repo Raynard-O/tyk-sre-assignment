@@ -2,27 +2,22 @@ name: Build image
 
 on:
   push:
-    branches:
-      - main
-  # Validate on PRs too: a broken build or failing test then fails review rather
-  # than main. Nothing is pushed.
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  GO_DIR: golang
+  DOCKERFILE: golang/Dockerfile
+
 jobs:
-  # Unit tests only. Integration tests carry the `integration` build tag, so
-  # they are excluded here and cannot break a run that has no cluster.
   test:
     runs-on: ubuntu-latest
 
-    # The Go module lives in golang/, not at the repo root. This applies to
-    # `run:` steps only — action inputs are always relative to the workspace
-    # root, which is why go-version-file below needs the full path.
     defaults:
       run:
         working-directory: golang
@@ -32,20 +27,12 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          # Not "go.mod": an action input ignores working-directory.
-          go-version-file: golang/go.mod
+          go-version-file: ${{ env.GO_DIR }}/go.mod
 
       - run: go vet ./...
 
-      # -race because net/http runs handlers concurrently. -count=1 defeats the
-      # test result cache.
       - run: go test -race -count=1 ./...
 
-  # Runs the integration suite against a throwaway kind cluster.
-  #
-  # Scoped to the read-only endpoints: kind ships kindnet, which does not
-  # implement Cilium's deny rules, so /isolations cannot be exercised here. That
-  # needs a Cilium-enabled cluster.
   integration:
     runs-on: ubuntu-latest
 
@@ -58,23 +45,15 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: golang/go.mod
+          go-version-file: ${{ env.GO_DIR }}/go.mod
 
       - uses: helm/kind-action@v1
         with:
           cluster_name: sre-assignment
 
-      # kind writes credentials to the default kubeconfig path. Passing it
-      # explicitly is required: BuildConfigFromFlags with an empty path only
-      # tries in-cluster config, it does not read $KUBECONFIG.
-      - name: Integration tests
-        run: |
-          TEST_KUBECONFIG="$HOME/.kube/config" \
-            go test -tags=integration -count=1 ./test/...
+      - run: TEST_KUBECONFIG="$HOME/.kube/config" go test -tags=integration -count=1 ./test/...
 
   build:
-    # An image that failed its tests should never reach the registry — and the
-    # tests are what assert enableDefaultDeny is false.
     needs: [test, integration]
     runs-on: ubuntu-latest
 
@@ -85,46 +64,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # buildx gives layer caching between runs; plain docker build has none, so
-      # every push recompiled every dependency from scratch.
       - uses: docker/setup-buildx-action@v3
 
-      # Fork PRs get no write credentials, so logging in there would fail.
-      - name: Log in to GHCR
+      - uses: docker/login-action@v3
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Handles the lowercasing that ${GITHUB_REPOSITORY,,} was doing by hand,
-      # and adds OCI labels linking the image back to the commit.
-      - name: Derive tags
+      - uses: docker/metadata-action@v5
         id: meta
-        uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
-          # Build context is the module directory, so COPY go.mod ./ resolves
-          # and the context stays small.
-          context: ./golang
-          file: ./golang/Dockerfile
+          context: ./${{ env.GO_DIR }}
+          file: ./${{ env.DOCKERFILE }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ github.sha }}
+          build-args: VERSION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Catches template errors and schema-invalid manifests without a cluster.
   chart:
     runs-on: ubuntu-latest
 
@@ -133,8 +100,18 @@ jobs:
 
       - uses: azure/setup-helm@v4
 
-      # Adjust the path if the chart does not sit at the repo root.
-      - run: helm lint ./charts/tyk-sre-assignment
+      - name: Lint and render charts
+        run: |
+          set -euo pipefail
 
-      - name: Render templates
-        run: helm template test ./charts/tyk-sre-assignment > /dev/null
+          charts=$(find . -name Chart.yaml -exec dirname {} \; | sort)
+
+          if [ -z "$charts" ]; then
+            echo "::error::no Chart.yaml found"
+            exit 1
+          fi
+
+          for chart in $charts; do
+            helm lint "$chart"
+            helm template release-name "$chart" > /dev/null
+          done
