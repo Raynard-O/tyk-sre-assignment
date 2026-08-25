@@ -14,11 +14,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+func kubeconfigForTest(t *testing.T) string {
+	t.Helper()
+
+	path := os.Getenv("TEST_KUBECONFIG")
+	if path == "" {
+		t.Skip("TEST_KUBECONFIG not set; skipping integration test")
+	}
+
+	return path
+}
+
 func testSetup(t *testing.T) (*kubernetes.KubernetesClient, error) {
 	t.Helper()
 
 	client, err := kubernetes.NewKubernetesClient(kubernetes.ClientConfig{
-		Kubeconfig:       os.Getenv("KUBECONFIG"),
+		Kubeconfig:       kubeconfigForTest(t),
 		ExemptNamespaces: nil,
 	})
 	if err != nil {
