@@ -24,7 +24,7 @@ traffic between two workloads on demand.
 ### `GET /healthz`
 
 Liveness only — it reports that the process is running and deliberately does
-**not** call Kubernetes. 
+**not** call Kubernetes.
 
 ```console
 $ curl -s localhost:8080/healthz
@@ -33,8 +33,8 @@ $ curl -s localhost:8080/healthz
 
 ### `GET /readyz`
 
-Readiness — whether tool can still reach the API server, and so whether we should
-receive traffic.
+Readiness — whether the service can still reach the API server, and so whether it
+should receive traffic.
 
 ```console
 $ curl -s localhost:8080/readyz
@@ -46,10 +46,9 @@ $ curl -s localhost:8080/readyz
 
 ### `GET /cluster/health`
 
-whether all the deployments in the k8s cluster have as many
-healthy pods as requested by the respective Deployment spec. Lists every Deployment in the cluster and reports any with fewer ready replicas
-than desired. The status code carries the verdict too, so a probe or alert does
-not have to parse the body.
+Whether every Deployment in the cluster has as many ready replicas as its spec
+asks for, listing any that fall short. The status code carries the verdict too, so
+a probe or alert does not have to parse the body.
 
 ```console
 $ curl -s localhost:8080/cluster/health | jq
@@ -71,6 +70,9 @@ $ curl -s localhost:8080/cluster/health | jq
 
 Stops two workloads exchanging **any** network traffic. Each side is a set of
 namespaces plus a label selector.
+
+Requires Cilium: upstream `NetworkPolicy` is allow-only and cannot express a
+targeted deny without also cutting off everything else those workloads talk to.
 
 ```console
 $ curl -s -X POST localhost:8080/isolations \
@@ -94,11 +96,15 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -X DELETE localhost:8080/isolations/i
 
 ## Quick start
 
+The Go module lives in `golang/`.
+
 ### Run locally against a real cluster
 
 ```console
+cd golang
+
 go mod tidy
-go build -o tyk-sre-assignment ./cmd/app
+go build
 
 ./tyk-sre-assignment --kubeconfig ~/.kube/config --address :8080
 ```
@@ -110,10 +116,19 @@ curl -s localhost:8080/healthz
 curl -s localhost:8080/cluster/health | jq
 ```
 
+### Run the tests
+
+```console
+cd golang
+
+go vet ./...
+go test -race -count=1 ./...
+```
+
 ### Run the container
 
 ```console
-docker build -t tyk-sre-assignment .
+docker build -t tyk-sre-assignment ./golang
 
 docker run --rm -p 8080:8080 \
   -v "$HOME/.kube/config:/kubeconfig:ro" \
@@ -185,5 +200,3 @@ only if you use the isolation endpoints:
 Set `rbac.isolation=false` to deploy a read-only instance. It then provably
 cannot cut traffic, because it lacks the verbs rather than merely not exposing
 them.
-
----

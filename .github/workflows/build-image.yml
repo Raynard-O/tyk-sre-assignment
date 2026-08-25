@@ -1,95 +1,107 @@
-name: CI
+name: Build image
 
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
+    branches:
+      - main
+  # Validate on PRs too: a broken build or failing test then fails review rather
+  # than main. Nothing is pushed.
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    name: Test
     runs-on: ubuntu-latest
+
+    # The Go module lives in golang/, not at the repo root. This applies to
+    # `run:` steps only — action inputs are always relative to the workspace
+    # root, which is why go-version-file below needs the full path.
+    defaults:
+      run:
+        working-directory: golang
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
+          # Not "go.mod": an action input ignores working-directory.
+          go-version-file: golang/go.mod
 
-          go-version-file: go.mod
-          cache: true
+      - run: go vet ./...
 
-      - name: Vet
-        run: go vet ./...
+      # -race because net/http runs handlers concurrently. -count=1 defeats the
+      # test result cache.
+      - run: go test -race -count=1 ./...
 
-      - name: Test
-        run: go test -race -count=1 ./...
-
-  image:
-    name: Build image
+  build:
+    # An image that failed its tests should never reach the registry — and the
+    # tests are what assert enableDefaultDeny is false.
     needs: test
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
-      # Required to push to GHCR with the built-in GITHUB_TOKEN.
       packages: write
+
     steps:
       - uses: actions/checkout@v4
+
+      # buildx gives layer caching between runs; plain docker build has none, so
+      # every push recompiled every dependency from scratch.
       - uses: docker/setup-buildx-action@v3
 
-      - name: Log in to ${{ env.REGISTRY }}
+      # Fork PRs get no write credentials, so logging in there would fail.
+      - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Handles the lowercasing that ${GITHUB_REPOSITORY,,} was doing by hand,
+      # and adds OCI labels linking the image back to the commit.
       - name: Derive tags
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ghcr.io/${{ github.repository }}
           tags: |
             type=sha,format=long
-            type=ref,event=branch
-            type=semver,pattern={{version}}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          # PRs build but do not publish, so a broken Dockerfile fails review
-          # instead of failing main.
+          # Build context is the module directory, so COPY go.mod ./ resolves
+          # and the context stays small.
+          context: ./golang
+          file: ./golang/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ github.sha }}
-          # Layer cache in the Actions cache: module downloads and the Go build
-          # cache survive between runs. mode=max keeps intermediate stages too.
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Attach SBOM and provenance so the image records what went into it.
-          sbom: true
-          provenance: mode=max
 
-      - name: Summarise
-        if: github.event_name != 'pull_request'
-        run: |
-          echo "### Published" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "Deploy by digest or the sha- tag, never :latest." >> "$GITHUB_STEP_SUMMARY"
+  # Catches template errors and schema-invalid manifests without a cluster.
+  chart:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      # Adjust the path if the chart does not sit at the repo root.
+      - run: helm lint ./charts/tyk-sre-assignment
+
+      - name: Render templates
+        run: helm template test ./charts/tyk-sre-assignment > /dev/null
