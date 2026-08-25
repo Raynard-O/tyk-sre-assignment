@@ -24,10 +24,7 @@ traffic between two workloads on demand.
 ### `GET /healthz`
 
 Liveness only — it reports that the process is running and deliberately does
-**not** call Kubernetes. If it did, an API server blip would fail liveness on
-every replica at once, kubelet would restart them all, and they still could not
-reach the API server. Dependency failures belong in readiness, where the
-consequence is "stop sending traffic" rather than "kill it".
+**not** call Kubernetes. 
 
 ```console
 $ curl -s localhost:8080/healthz
@@ -36,7 +33,7 @@ $ curl -s localhost:8080/healthz
 
 ### `GET /readyz`
 
-Readiness — whether we can still reach the API server, and so whether we should
+Readiness — whether tool can still reach the API server, and so whether we should
 receive traffic.
 
 ```console
@@ -49,7 +46,8 @@ $ curl -s localhost:8080/readyz
 
 ### `GET /cluster/health`
 
-Lists every Deployment in the cluster and reports any with fewer ready replicas
+whether all the deployments in the k8s cluster have as many
+healthy pods as requested by the respective Deployment spec. Lists every Deployment in the cluster and reports any with fewer ready replicas
 than desired. The status code carries the verdict too, so a probe or alert does
 not have to parse the body.
 
@@ -69,10 +67,6 @@ $ curl -s localhost:8080/cluster/health | jq
 }
 ```
 
-Deployments that omit `spec.replicas` are treated as wanting 1, matching
-Kubernetes' own default. (`spec.replicas` is a `*int32` and is `nil` when unset —
-dereferencing it blindly panics.)
-
 ### `POST /isolations`
 
 Stops two workloads exchanging **any** network traffic. Each side is a set of
@@ -88,25 +82,6 @@ $ curl -s -X POST localhost:8080/isolations \
     }'
 {"status":"isolated"}
 ```
-
-`name` identifies the isolation and is what you pass to `DELETE` — an incident ID
-makes a good one. Both sides require at least one namespace and at least one
-label: an empty selector would match every pod in those namespaces, turning
-"isolate one Deployment" into "isolate everything the team runs".
-
-**This requires Cilium.** Upstream `NetworkPolicy` is allow-only — a pod selected
-by a policy is isolated for that direction and only explicitly-allowed traffic
-gets through. There is no way to express "deny just this pair" without also
-cutting off everything else those workloads talk to. Cilium's `ingressDeny` /
-`egressDeny` can, and its deny rules take precedence over every allow rule,
-including plain NetworkPolicies.
-
-The service creates one `CiliumClusterwideNetworkPolicy` per isolation. It selects
-side A only, which covers both directions: A is an endpoint of every A↔B packet,
-so `egressDeny` stops A→B at the source and `ingressDeny` stops B→A at the
-destination. It also sets `enableDefaultDeny: {ingress: false, egress: false}` —
-without that, selecting A would put A into default-deny and cut it off from the
-entire cluster rather than just from B.
 
 ### `DELETE /isolations/{name}`
 
