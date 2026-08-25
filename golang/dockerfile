@@ -1,8 +1,6 @@
 ARG GO_VERSION=1.23
 
-
-FROM --platform linux/amd64,linux/arm64 golang:${GO_VERSION}-alpine AS build
-
+FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
